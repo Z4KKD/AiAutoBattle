@@ -53,40 +53,34 @@ class FightSimGUI:
 
     # ---------------- Maze ----------------
     def init_maze(self):
-        # Start empty maze
+        # Empty maze
         self.maze = [[0]*GRID_SIZE for _ in range(GRID_SIZE)]
+
+        # Border walls
         for i in range(GRID_SIZE):
             self.maze[0][i] = self.maze[GRID_SIZE-1][i] = 1
             self.maze[i][0] = self.maze[i][GRID_SIZE-1] = 1
 
-        # Function to check connectivity using BFS
-        def is_connected():
-            visited = [[False]*GRID_SIZE for _ in range(GRID_SIZE)]
-            queue = [(1,1)]
-            visited[1][1] = True
-            count = 1
-            while queue:
-                x,y = queue.pop(0)
-                for dx,dy in [(0,-1),(0,1),(-1,0),(1,0)]:
-                    nx,ny = x+dx,y+dy
-                    if 0<=nx<GRID_SIZE and 0<=ny<GRID_SIZE and not visited[ny][nx] and self.maze[ny][nx]==0:
-                        visited[ny][nx] = True
-                        queue.append((nx,ny))
-                        count += 1
-            # Check that most tiles are reachable
-            empty_tiles = sum(row.count(0) for row in self.maze)
-            return count >= empty_tiles
-
-        # Randomly add walls without blocking connectivity
-        wall_count = int(GRID_SIZE*GRID_SIZE*0.25)  # 25% walls
-        while wall_count > 0:
-            x,y = random.randint(1,GRID_SIZE-2), random.randint(1,GRID_SIZE-2)
-            if self.maze[y][x]==0:
+        # Random walls inside the maze
+        wall_count = GRID_SIZE  # roughly GRID_SIZE random walls
+        placed = 0
+        while placed < wall_count:
+            x = random.randint(1, GRID_SIZE-2)
+            y = random.randint(1, GRID_SIZE-2)
+            # Don't block the surrounding area too much
+            if self.maze[y][x] == 0 and self.surrounding_free(x, y):
                 self.maze[y][x] = 1
-                if not is_connected():
-                    self.maze[y][x] = 0  # revert if it blocks maze
-                else:
-                    wall_count -= 1
+                placed += 1
+
+    def surrounding_free(self, x, y):
+        """Ensure at least one open path in all directions to prevent trapping."""
+        for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nx, ny = x+dx, y+dy
+            if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE:
+                if self.maze[ny][nx] == 0:
+                    return True
+        return False
+
 
 
     def draw_maze(self):
