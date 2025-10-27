@@ -1,4 +1,3 @@
-# fighter.py
 import random
 from collections import defaultdict, deque
 
@@ -34,7 +33,6 @@ class Fighter:
         self.name = name
         self.hp = MAX_HP
         self.max_hp = MAX_HP
-
         self.statuses = defaultdict(int)
         self.abilities = []
         self.base_actions = ["attack", "defend", "heal"]
@@ -43,10 +41,9 @@ class Fighter:
         self.q_table = {}
         self.learning_rate = 0.12
         self.discount = 0.95
-        self.epsilon = 0.18
+        self.epsilon = 0.18 if name=="AI_One" else 0.25
         self.memory = deque(maxlen=50)
-        self.combo_memory = deque(maxlen=3)  # track last moves for combos
-
+        self.combo_memory = deque(maxlen=3)
         self.personality_bias = personality_bias or {"aggressive":0.0, "defensive":0.0, "balanced":0.0}
         self.last_action = None
 
@@ -62,12 +59,17 @@ class Fighter:
 
     def tick_statuses(self):
         logs = []
-        for status, dmg in [("burn",3),("poison",2),("bleed",4)]:
-            if self.statuses.get(status, 0) > 0:
+        # Damage over time stronger
+        for status, dmg in [("burn",5),("poison",4),("bleed",6)]:
+            if self.statuses.get(status,0) > 0:
                 self.hp -= dmg
                 self.statuses[status] -= 1
                 logs.append(f"{self.name} suffers {status} for {dmg} damage.")
                 self.clamp_hp()
+        # Cooldowns for basic actions
+        for cd in ["heal_cd","defend_cd"]:
+            if self.statuses.get(cd,0) > 0:
+                self.statuses[cd] -= 1
         return logs
 
     def derive_mood(self):
@@ -89,50 +91,55 @@ class Fighter:
     def available_actions(self):
         acts = list(self.base_actions)
         acts.extend(a.name for a in self.abilities if a.ready())
+        if self.statuses.get("heal_cd",0) > 0 and "heal" in acts:
+            acts.remove("heal")
+        if self.statuses.get("defend_cd",0) > 0 and "defend" in acts:
+            acts.remove("defend")
         return acts
 
     def choose_action(self, opponent):
+        # Heal only when really low
+        if self.hp < self.max_hp*0.25 and "heal" in self.available_actions():
+            self.last_action = "heal"
+            return "heal"
+        # Recharge only at very low HP
+        if self.hp < self.max_hp*0.25:
+            for a in self.abilities:
+                if a.name=="Recharge" and a.ready():
+                    self.last_action = "Recharge"
+                    return "Recharge"
+
         state = self.get_state_key(opponent)
         actions = self.available_actions()
+        if not actions:
+            actions = ["attack"]
 
-        # Exploration
         if random.random() < self.epsilon or state not in self.q_table:
             choice = random.choice(actions)
             self.last_action = choice
             return choice
 
-        # Exploitation with personality and mood bias
-        qvals = self.q_table.get(state, {})
+        # Exploit
+        qvals = self.q_table.get(state,{})
         best = None
         best_score = -1e9
-        mood = state[-2]  # self mood
+        mood = state[-2]
         for a in actions:
-            base_v = qvals.get(a, 0.0)
+            base_v = qvals.get(a,0.0)
             bias = 0.0
-
-            # Mood-based adjustment
-            if mood == "aggressive" and "attack" in a:
-                bias += 0.08
-            if mood == "defensive" and ("heal" in a or "defend" in a):
-                bias += 0.06
-
-            # Personality bias
-            if self.personality_bias.get("aggressive",0) and "attack" in a:
-                bias += self.personality_bias["aggressive"]
-
-            # Exploit opponent vulnerabilities
-            if "stunned" in opponent.statuses and opponent.statuses["stunned"] > 0 and ("attack" in a or a in [ab.name for ab in self.abilities]):
+            if mood=="aggressive" and "attack" in a: bias += 0.08
+            if mood=="defensive" and ("heal" in a or "defend" in a): bias += 0.06
+            if self.personality_bias.get("aggressive",0) and "attack" in a: bias += self.personality_bias["aggressive"]
+            if opponent.statuses.get("stunned",0) > 0 and ("attack" in a or a in [ab.name for ab in self.abilities]):
                 bias += 0.05
-
             score = base_v + bias + random.random()*1e-6
             if score > best_score:
                 best_score = score
                 best = a
-
         self.last_action = best
         return best
 
-    def update_q(self, state, action, reward, next_state):
+    def update_q(self,state,action,reward,next_state):
         if state not in self.q_table:
             self.q_table[state] = {a:0.0 for a in self.available_actions()}
         if next_state not in self.q_table:
@@ -141,58 +148,67 @@ class Fighter:
             self.q_table[state][action] = 0.0
 
         current = self.q_table[state][action]
-        future = max(self.q_table[next_state].values(), default=0.0)
-        self.q_table[state][action] = current + self.learning_rate * (reward + self.discount * future - current)
+        future = max(self.q_table[next_state].values(),default=0.0)
+        self.q_table[state][action] = current + self.learning_rate*(reward + self.discount*future - current)
         self.memory.append(reward)
-
-        # update combo memory
         self.combo_memory.append(action)
 
-        # minor personality evolution
         if random.random() < 0.02:
             mood = self.derive_mood()
-            if mood == "aggressive":
-                self.personality_bias["aggressive"] += 0.001
-            if mood == "defensive":
-                self.personality_bias["defensive"] += 0.001
+            if mood=="aggressive": self.personality_bias["aggressive"] += 0.001
+            if mood=="defensive": self.personality_bias["defensive"] += 0.001
 
-        # decay epsilon slightly
-        self.epsilon = max(0.05, self.epsilon * 0.995)
+        self.epsilon = max(0.05,self.epsilon*0.995)
 
     def perform_action(self, action_name, opponent):
         reward = 0.0
         log = ""
 
-        # Basic actions
-        if action_name == "attack":
+        # Sneak attack crit
+        sneak = False
+        if hasattr(opponent,'can_see') and not opponent.can_see(self):
+            sneak = True
+
+        if action_name=="attack":
             dmg = random.randint(8,14)
             if self.statuses.get("charged",0) > 0:
                 dmg = int(dmg*1.5)
                 self.statuses["charged"] = 0
                 log += "Charged bonus! "
+            if sneak:
+                dmg = int(dmg*1.5)
+                log += f"{self.name} performs sneak attack! Crit dmg {dmg}. "
             opponent.hp -= dmg
             opponent.clamp_hp()
             log += f"{self.name} attacks for {dmg} damage."
             reward += dmg*0.1
 
-        elif action_name == "defend":
-            self.hp += 6
-            self.statuses["shield"] = 1
-            self.clamp_hp()
-            log += f"{self.name} defends and gains 6 HP."
-            reward += 0.05
+        elif action_name=="defend":
+            if self.statuses.get("defend_cd",0) > 0:
+                log = f"{self.name} tries to defend but must wait!"
+                reward -= 0.05
+            else:
+                self.statuses["shield"] = 1
+                self.statuses["defend_cd"] = 3
+                log += f"{self.name} raises shield."
+                reward += 0.02
 
-        elif action_name == "heal":
-            heal = random.randint(6,15)
-            self.hp += heal
-            self.clamp_hp()
-            log += f"{self.name} heals {heal} HP."
-            reward += heal*0.06
+        elif action_name=="heal":
+            if self.statuses.get("heal_cd",0) > 0:
+                log = f"{self.name} tries to heal but must wait!"
+                reward -= 0.05
+            else:
+                heal = random.randint(4,8)
+                self.hp += heal
+                self.clamp_hp()
+                self.statuses["heal_cd"] = 2
+                log += f"{self.name} heals {heal} HP."
+                reward += heal*0.04
 
         else:
             for a in self.abilities:
-                if a.name == action_name and a.ready():
-                    log, r = a.func(self, opponent)
+                if a.name==action_name and a.ready():
+                    log,r = a.func(self,opponent)
                     a.use()
                     reward += r
                     break
@@ -206,15 +222,15 @@ class Fighter:
         self.clamp_hp()
         opponent.clamp_hp()
 
-        # Combo bonus example
         combo = list(self.combo_memory)[-2:] + [action_name]
-        if combo == ["Poison Strike", "Bleeding Slash"]:
+        if combo == ["Poison Strike","Bleeding Slash"]:
             reward += 0.05
             log += " Combo bonus applied!"
 
-        # Reward for applying status effects
         for status in ["burn","poison","bleed","stunned"]:
             if opponent.statuses.get(status,0) > 0:
                 reward += 0.02
+
+        reward += 0.01*(self.hp/self.max_hp)
 
         return log, reward
