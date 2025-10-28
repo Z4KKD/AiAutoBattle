@@ -37,6 +37,9 @@ class Fighter:
         self.abilities = []
         self.base_actions = ["attack", "defend", "heal"]
 
+        # optional external controller (Agent from agents.py)
+        self.agent = None
+
         # Q-learning
         self.q_table = {}
         self.learning_rate = 0.12
@@ -98,6 +101,39 @@ class Fighter:
         return acts
 
     def choose_action(self, opponent):
+        # If an external Agent is attached, delegate decision to it.
+        if getattr(self, "agent", None) is not None:
+            # Build features similar to Combatant.features_against
+            own_hp_frac = self.hp / self.max_hp
+            opp_hp_frac = opponent.hp / opponent.max_hp
+            own_shield = 1.0 if self.statuses.get("shield", 0) > 0 else 0.0
+            opp_shield = 1.0 if opponent.statuses.get("shield", 0) > 0 else 0.0
+            noise = random.random()
+            features = [own_hp_frac, opp_hp_frac, own_shield, opp_shield, noise]
+            try:
+                choice = self.agent.act(features)
+            except Exception:
+                choice = random.choice(self.available_actions())
+
+            # Map agent 'power' to an available ability name if present
+            if choice == "power":
+                # find an ability containing 'power' or 'strike' or 'power strike'
+                for a in self.abilities:
+                    if "power" in a.name.lower() or "strike" in a.name.lower():
+                        return a.name
+                # fallback to any ability
+                if self.abilities:
+                    return self.abilities[0].name
+                return "attack"
+
+            # If the agent returned a base action, ensure it's available
+            if choice in self.available_actions():
+                self.last_action = choice
+                return choice
+            # Otherwise fallback
+            self.last_action = random.choice(self.available_actions())
+            return self.last_action
+
         # Heal only when really low
         if self.hp < self.max_hp*0.25 and "heal" in self.available_actions():
             self.last_action = "heal"

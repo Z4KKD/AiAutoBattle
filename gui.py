@@ -2,7 +2,10 @@ import tkinter as tk
 import pickle
 from fighter import Fighter, MAX_HP, Ability
 from abilities import power_strike, vampiric_bite, recharge, poison_strike, burn_blast, bleeding_slash, shield_wall
-import os, random, heapq
+import os, random
+from agents import Agent
+from ga_train import load_best, train_and_save
+import threading
 
 QTABLE_FILE = "ai_qtables.pkl"
 GRID_SIZE = 15
@@ -27,6 +30,16 @@ class FightSimGUI:
         self.canvas = tk.Canvas(root, width=GRID_SIZE*TILE_SIZE, height=GRID_SIZE*TILE_SIZE+80, bg="black")
         self.canvas.pack(padx=10,pady=5)
 
+        # GA control button frame
+        btn_frame = tk.Frame(root)
+        btn_frame.pack(padx=10, pady=4)
+        self.load_ga_btn = tk.Button(btn_frame, text="Load GA Agent (best)", command=self.load_ga_agents)
+        self.load_ga_btn.pack(side=tk.LEFT, padx=6)
+        self.clear_ga_btn = tk.Button(btn_frame, text="Clear GA Agents", command=self.clear_ga_agents)
+        self.clear_ga_btn.pack(side=tk.LEFT, padx=6)
+        self.train_ga_btn = tk.Button(btn_frame, text="Train GA (background)", command=self.start_training)
+        self.train_ga_btn.pack(side=tk.LEFT, padx=6)
+
         # Win counters
         self.ai1_wins = 0
         self.ai2_wins = 0
@@ -34,8 +47,10 @@ class FightSimGUI:
         # Fighters
         self.ai1 = Fighter("AI_One")
         self.ai2 = Fighter("AI_Two")
-        if "AI_One" in self.qtables: self.ai1.q_table = self.qtables["AI_One"]
-        if "AI_Two" in self.qtables: self.ai2.q_table = self.qtables["AI_Two"]
+        if "AI_One" in self.qtables:
+            self.ai1.q_table = self.qtables["AI_One"]
+        if "AI_Two" in self.qtables:
+            self.ai2.q_table = self.qtables["AI_Two"]
 
         # Add abilities
         self.ai1.add_ability(Ability("Power Strike",3,power_strike))
@@ -122,6 +137,10 @@ class FightSimGUI:
             f.hp = MAX_HP
             f.statuses.clear()
             for a in f.abilities: a.cur_cd = 0
+            # reset attached agents' cooldowns if any
+            if hasattr(f, "agent") and f.agent is not None:
+                # nothing to reset inside Agent, but keep attribute
+                pass
 
         while True:
             x1,y1 = random.randint(1,GRID_SIZE-2), random.randint(1,GRID_SIZE-2)
@@ -133,6 +152,35 @@ class FightSimGUI:
 
         self.log("\n===== NEW FIGHT =====\n")
         self.draw_maze()
+
+    def load_ga_agents(self):
+        try:
+            best = load_best()
+        except Exception:
+            # try to load via Agent.load fallback
+            try:
+                best = Agent.load("best_agent.pkl")
+            except Exception:
+                self.log("No saved GA agent found (best_agent.pkl). Train and save first.")
+                return
+        # attach best to AI1 and a random agent to AI2 for visual demo
+        self.ai1.agent = best
+        self.ai2.agent = Agent()
+        self.log("Loaded GA agent: attached best -> AI_One, random -> AI_Two")
+
+    def start_training(self):
+        # run GA training in a background thread and stream progress to GUI
+        def runner():
+            # use default GA params
+            train_and_save(status_cb=self.log)
+        t = threading.Thread(target=runner, daemon=True)
+        t.start()
+        self.log("Started GA training in background thread...")
+
+    def clear_ga_agents(self):
+        self.ai1.agent = None
+        self.ai2.agent = None
+        self.log("Cleared GA agents; using built-in Fighter AI (Q-learning / scripted).")
 
     # ---------------- Fight update ----------------
     def update_fight(self):
